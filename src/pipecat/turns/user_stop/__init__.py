@@ -5,9 +5,7 @@
 #
 
 from .base_user_turn_stop_strategy import BaseUserTurnStopStrategy, UserTurnStoppedParams
-from .classifier_user_turn_completion_stop_strategy import (
-    ClassifierUserTurnCompletionStopStrategy,
-)
+from .classifier_user_turn_stop_strategy import ClassifierUserTurnStopStrategy
 from .deferred_user_turn_stop_strategy import DeferredUserTurnStopStrategy, deferred
 from .eager_match_policy import EagerMatchPolicy, ExactMatch, NormalizedMatch
 from .eager_user_turn_stop_strategy import EagerUserTurnStopStrategy
@@ -19,7 +17,7 @@ from .turn_analyzer_user_turn_stop_strategy import TurnAnalyzerUserTurnStopStrat
 
 __all__ = [
     "BaseUserTurnStopStrategy",
-    "ClassifierUserTurnCompletionStopStrategy",
+    "ClassifierUserTurnStopStrategy",
     "DeferredUserTurnStopStrategy",
     "EagerMatchPolicy",
     "EagerUserTurnStopStrategy",

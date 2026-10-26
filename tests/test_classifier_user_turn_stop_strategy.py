@@ -8,42 +8,24 @@ import asyncio
 import unittest
 
 from pipecat.classifiers.base_classifier import BaseClassifier, ChoiceResult, ClassifierError
-from pipecat.frames.frames import Frame, MetricsFrame, TranscriptionFrame
+from pipecat.frames.frames import (
+    Frame,
+    MetricsFrame,
+    TranscriptionFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
+)
 from pipecat.metrics.metrics import ProcessingMetricsData
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.turns.types import ProcessFrameResult
-from pipecat.turns.user_stop import (
-    BaseUserTurnStopStrategy,
-    ClassifierUserTurnCompletionStopStrategy,
-)
-from pipecat.turns.user_stop.classifier_user_turn_completion_stop_strategy import (
-    TURN_COMPLETION_QUESTION,
-)
-from pipecat.turns.user_turn_strategies import ClassifierUserTurnStrategies
+from pipecat.turns.user_start import VADUserTurnStartStrategy
+from pipecat.turns.user_stop import BaseUserTurnStopStrategy, ClassifierUserTurnStopStrategy
+from pipecat.turns.user_stop.classifier_user_turn_stop_strategy import TURN_COMPLETION_QUESTION
+from pipecat.turns.user_turn_controller import UserTurnController
+from pipecat.turns.user_turn_strategies import ClassifierUserTurnStrategies, UserTurnStrategies
 from pipecat.utils.asyncio.task_manager import TaskManager
 from tests.frame_processor_helpers import frame_processor_setup
 
 SETTLE = 0.1
-
-
-class _Detector(BaseUserTurnStopStrategy):
-    """A detector the test fires by hand."""
-
-    def __init__(self):
-        super().__init__()
-        self.frames: list[Frame] = []
-        self.started = 0
-        self.stopped = 0
-
-    async def handle_user_turn_started(self):
-        self.started += 1
-
-    async def handle_user_turn_stopped(self):
-        self.stopped += 1
-
-    async def process_frame(self, frame: Frame) -> ProcessFrameResult:
-        self.frames.append(frame)
-        return ProcessFrameResult.CONTINUE
 
 
 class _FakeClassifier(BaseClassifier):
@@ -52,16 +34,18 @@ class _FakeClassifier(BaseClassifier):
         self.answers = list(answers)
         self.delay = delay
         self.asked = []
-        self.setup_called = False
+        self.set_up_with = None
         self.cleaned_up = False
 
-    async def setup(self, worker):
-        self.setup_called = True
+    async def setup(self, task_manager):
+        await super().setup(task_manager)
+        self.set_up_with = task_manager
 
     async def cleanup(self):
+        await super().cleanup()
         self.cleaned_up = True
 
-    async def _ask(self, state, questions):
+    async def _ask(self, state, questions, images=None):
         self.asked.append(state)
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -78,123 +62,145 @@ class _FakeClassifier(BaseClassifier):
         return results, None
 
 
+class _Detector(BaseUserTurnStopStrategy):
+    """Decides the user is done as soon as VAD stops, like a quick smart turn."""
+
+    async def process_frame(self, frame: Frame):
+        if isinstance(frame, VADUserStoppedSpeakingFrame):
+            await self.report_user_turn_stopped()
+
+
 def _said(text: str) -> TranscriptionFrame:
     return TranscriptionFrame(text=text, user_id="", timestamp="")
 
 
-class TestClassifierUserTurnCompletionStopStrategy(unittest.IsolatedAsyncioTestCase):
+class TestClassifierUserTurnStopStrategy(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.task_manager = TaskManager()
-        self.inference = []
         self.stopped = []
 
-    async def _strategy(self, *answers, context=None, **kwargs):
-        self.detector = _Detector()
-        self.classifier = _FakeClassifier(*answers, delay=kwargs.pop("delay", 0.0))
-        strategy = ClassifierUserTurnCompletionStopStrategy(
-            self.detector, classifier=self.classifier, context=context, **kwargs
+    async def asyncTearDown(self):
+        await self.strategy.cleanup()
+
+    async def _start(self, *answers, context=None, delay=0.0, **kwargs):
+        self.classifier = _FakeClassifier(*answers, delay=delay)
+        self.strategy = ClassifierUserTurnStopStrategy(
+            classifier=self.classifier, context=context, **kwargs
         )
 
-        @strategy.event_handler("on_user_turn_inference_triggered")
-        async def _inference(s, speculation):
-            self.inference.append(speculation)
-
-        @strategy.event_handler("on_user_turn_stopped")
-        async def _stopped(s, params):
+        @self.strategy.event_handler("on_user_turn_stopped")
+        async def on_user_turn_stopped(strategy, params):
             self.stopped.append(params)
 
-        await strategy.setup(frame_processor_setup(self.task_manager))
-        await strategy.handle_user_turn_started()
-        return strategy
+        await self.strategy.setup(frame_processor_setup(self.task_manager))
+        await self.strategy.handle_user_turn_started()
 
-    async def test_complete_ends_the_turn_with_the_text(self):
-        strategy = await self._strategy("complete")
-        await strategy.process_frame(_said("I'd like to"))
-        await strategy.process_frame(_said("book a table."))
-        await self.detector.trigger_user_turn_stopped()
+    async def _say(self, *texts):
+        await self.strategy.process_frame(VADUserStartedSpeakingFrame())
+        for text in texts:
+            await self.strategy.process_frame(_said(text))
+        await self.strategy.process_frame(VADUserStoppedSpeakingFrame())
         await asyncio.sleep(SETTLE)
+
+    async def test_complete_reports_that_the_user_is_done(self):
+        await self._start("complete")
+        await self._say("I'd like to", "book a table.")
 
         self.assertEqual(self.classifier.asked, [{"user": "I'd like to book a table."}])
-        self.assertEqual(len(self.inference), 1)
         self.assertEqual(len(self.stopped), 1)
-        self.assertEqual(self.detector.frames[0].text, "I'd like to")
 
-    async def test_each_classification_pushes_its_metrics(self):
-        strategy = await self._strategy("complete")
-        pushed = []
+    async def test_nothing_is_asked_while_the_user_speaks(self):
+        await self._start("complete")
+        await self.strategy.process_frame(VADUserStartedSpeakingFrame())
+        await self.strategy.process_frame(_said("I'd like to"))
+        await asyncio.sleep(SETTLE)
+        self.assertEqual(self.classifier.asked, [])
 
-        @strategy.event_handler("on_push_frame")
-        async def _pushed(s, frame, direction):
-            pushed.append(frame)
+        await self.strategy.process_frame(VADUserStoppedSpeakingFrame())
+        await asyncio.sleep(SETTLE)
+        self.assertEqual(len(self.classifier.asked), 1)
 
-        await strategy.process_frame(_said("book a table."))
-        await self.detector.trigger_user_turn_stopped()
+    async def test_a_transcription_after_the_pause_is_classified(self):
+        await self._start("complete")
+        await self._say()
+        self.assertEqual(self.classifier.asked, [])
+
+        await self.strategy.process_frame(_said("book a table."))
+        await asyncio.sleep(SETTLE)
+        self.assertEqual(self.classifier.asked, [{"user": "book a table."}])
+        self.assertEqual(len(self.stopped), 1)
+
+    async def test_the_same_words_are_asked_about_once(self):
+        await self._start("complete")
+        await self._say("book a table.")
+        await self.strategy.process_frame(VADUserStoppedSpeakingFrame())
         await asyncio.sleep(SETTLE)
 
-        metrics = [f for f in pushed if isinstance(f, MetricsFrame)]
-        self.assertEqual(len(metrics), 1)
-        (processing,) = metrics[0].data
-        self.assertIsInstance(processing, ProcessingMetricsData)
-        self.assertEqual(processing.processor, self.classifier.name)
+        self.assertEqual(len(self.classifier.asked), 1)
 
-    async def test_short_holds_the_turn_until_the_user_continues(self):
-        strategy = await self._strategy("short", "complete", short_timeout=5.0)
-        await strategy.process_frame(_said("I'd like to"))
-        await self.detector.trigger_user_turn_stopped()
-        await asyncio.sleep(SETTLE)
+    async def test_speech_without_new_words_asks_again(self):
+        """The controller clears the stop decisions on any speech, such as a cough."""
+        await self._start("complete", "complete")
+        await self._say("book a table.")
+        await self._say()
+
+        self.assertEqual(len(self.classifier.asked), 2)
+        self.assertEqual(len(self.stopped), 2)
+
+    async def test_short_waits_before_reporting(self):
+        await self._start("short", short_timeout=0.3)
+        await self._say("I'd like to")
+        self.assertEqual(self.stopped, [])
+        self.assertTrue(self.strategy.decision_scheduled)
+
+        await asyncio.sleep(0.3)
+        self.assertEqual(len(self.stopped), 1)
+        self.assertFalse(self.strategy.decision_scheduled)
+
+    async def test_long_waits_before_reporting(self):
+        await self._start("long", long_timeout=0.3)
+        await self._say("let me think")
         self.assertEqual(self.stopped, [])
 
-        await strategy.process_frame(_said("book a table."))
-        await self.detector.trigger_user_turn_stopped()
-        await asyncio.sleep(SETTLE)
+        await asyncio.sleep(0.3)
+        self.assertEqual(len(self.stopped), 1)
+
+    async def test_speaking_again_ends_the_wait_and_classifies_the_whole_turn(self):
+        await self._start("short", "complete", short_timeout=0.3)
+        await self._say("I'd like to")
+        await self._say("book a table.")
+        await asyncio.sleep(0.3)
 
         self.assertEqual(self.classifier.asked[1], {"user": "I'd like to book a table."})
         self.assertEqual(len(self.stopped), 1)
 
-    async def test_short_timeout_ends_the_turn(self):
-        strategy = await self._strategy("short", short_timeout=0.2)
-        await strategy.process_frame(_said("I'd like to"))
-        await self.detector.trigger_user_turn_stopped()
-        await asyncio.sleep(SETTLE)
+    async def test_speaking_again_drops_a_verdict_on_its_way(self):
+        await self._start("complete", "short", delay=0.2, short_timeout=5.0)
+        await self.strategy.process_frame(_said("I'd like to"))
+        await self.strategy.process_frame(VADUserStartedSpeakingFrame())
+        await asyncio.sleep(0.3)
+
         self.assertEqual(self.stopped, [])
 
-        await asyncio.sleep(0.3)
+    async def test_a_classifier_error_leaves_the_turn_to_the_others(self):
+        await self._start(ClassifierError("down"))
+        await self._say("hello")
+
         self.assertEqual(len(self.stopped), 1)
 
-    async def test_long_timeout_ends_the_turn(self):
-        strategy = await self._strategy("long", long_timeout=0.2)
-        await strategy.process_frame(_said("let me think"))
-        await self.detector.trigger_user_turn_stopped()
-        await asyncio.sleep(SETTLE)
-        self.assertEqual(self.stopped, [])
+    async def test_a_slow_classifier_leaves_the_turn_to_the_others(self):
+        await self._start("short", delay=0.5, classification_timeout=0.1)
+        await self._say("hello")
+        await asyncio.sleep(0.1)
 
-        await asyncio.sleep(0.3)
         self.assertEqual(len(self.stopped), 1)
 
-    async def test_new_turn_cancels_a_pending_timeout(self):
-        strategy = await self._strategy("short", short_timeout=0.2)
-        await strategy.process_frame(_said("I'd like to"))
-        await self.detector.trigger_user_turn_stopped()
-        await asyncio.sleep(SETTLE)
+    async def test_nothing_is_asked_outside_a_turn(self):
+        await self._start("complete")
+        await self.strategy.handle_user_turn_stopped()
+        await self._say("hello")
 
-        await strategy.handle_user_turn_started()
-        await asyncio.sleep(0.3)
-        self.assertEqual(self.stopped, [])
-        self.assertEqual(self.detector.started, 2)
-
-    async def test_classifier_error_ends_the_turn(self):
-        strategy = await self._strategy(ClassifierError("down"))
-        await strategy.process_frame(_said("hello"))
-        await self.detector.trigger_user_turn_stopped()
-        await asyncio.sleep(SETTLE)
-        self.assertEqual(len(self.stopped), 1)
-
-    async def test_slow_classifier_ends_the_turn(self):
-        strategy = await self._strategy("short", delay=0.5, classification_timeout=0.1)
-        await strategy.process_frame(_said("hello"))
-        await self.detector.trigger_user_turn_stopped()
-        await asyncio.sleep(0.3)
-        self.assertEqual(len(self.stopped), 1)
+        self.assertEqual(self.classifier.asked, [])
 
     async def test_context_adds_the_assistants_last_message(self):
         context = LLMContext(
@@ -204,50 +210,111 @@ class TestClassifierUserTurnCompletionStopStrategy(unittest.IsolatedAsyncioTestC
                 {"role": "user", "content": "hmm"},
             ]
         )
-        strategy = await self._strategy("long", context=context, long_timeout=5.0)
-        await strategy.process_frame(_said("that's interesting"))
-        await self.detector.trigger_user_turn_stopped()
-        await asyncio.sleep(SETTLE)
+        await self._start("long", context=context, long_timeout=5.0)
+        await self._say("that's interesting")
 
         self.assertEqual(
             self.classifier.asked,
             [{"assistant": "Where would you go?", "user": "that's interesting"}],
         )
 
-    async def test_forwards_lifecycle_to_inner_and_classifier(self):
-        strategy = await self._strategy("complete")
-        await strategy.handle_user_turn_stopped()
-        await strategy.cleanup()
+    async def test_each_classification_pushes_its_metrics(self):
+        await self._start("complete")
+        pushed = []
 
-        self.assertTrue(self.classifier.setup_called)
+        @self.strategy.event_handler("on_push_frame")
+        async def on_push_frame(strategy, frame, direction):
+            pushed.append(frame)
+
+        await self._say("book a table.")
+
+        metrics = [f for f in pushed if isinstance(f, MetricsFrame)]
+        self.assertEqual(len(metrics), 1)
+        (processing,) = metrics[0].data
+        self.assertIsInstance(processing, ProcessingMetricsData)
+        self.assertEqual(processing.processor, self.classifier.name)
+
+    async def test_the_classifier_is_set_up_and_cleaned_up(self):
+        await self._start("complete")
+
+        self.assertIs(self.classifier.set_up_with, self.task_manager)
+        await self.strategy.cleanup()
         self.assertTrue(self.classifier.cleaned_up)
-        self.assertEqual(self.detector.started, 1)
-        self.assertEqual(self.detector.stopped, 1)
 
-    async def test_detector_events_do_not_reach_the_controller(self):
-        strategy = await self._strategy("short", short_timeout=5.0)
-        await strategy.process_frame(_said("I'd like to"))
-        await self.detector.trigger_user_turn_stopped()
+
+class TestClassifierNextToADetector(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.task_manager = TaskManager()
+        self.stops = []
+
+    async def asyncTearDown(self):
+        await self.controller.cleanup()
+
+    async def _start(self, *answers, **kwargs):
+        classifier = _FakeClassifier(*answers)
+        self.controller = UserTurnController(
+            user_turn_strategies=UserTurnStrategies(
+                start=[VADUserTurnStartStrategy()],
+                stop=[_Detector(), ClassifierUserTurnStopStrategy(classifier=classifier, **kwargs)],
+            ),
+            user_turn_stop_timeout=0.2,
+        )
+        await self.controller.setup(frame_processor_setup(self.task_manager))
+        await self.controller.start()
+
+        @self.controller.event_handler("on_user_turn_stopped")
+        async def on_user_turn_stopped(controller, strategy, params):
+            self.stops.append(strategy)
+
+    async def _say(self, text: str):
+        await self.controller.process_frame(VADUserStartedSpeakingFrame())
+        await self.controller.process_frame(_said(text))
+        await self.controller.process_frame(VADUserStoppedSpeakingFrame())
         await asyncio.sleep(SETTLE)
 
-        self.assertEqual(self.inference, [])
-        self.assertEqual(self.stopped, [])
+    async def test_the_turn_ends_once_the_detector_and_the_classifier_agree(self):
+        await self._start("complete")
+        await self._say("book a table.")
 
-    def test_options_cover_the_three_verdicts(self):
-        self.assertEqual(set(TURN_COMPLETION_QUESTION.options), {"complete", "short", "long"})
+        self.assertEqual(len(self.stops), 1)
+        self.assertIsInstance(self.stops[0], ClassifierUserTurnStopStrategy)
+
+    async def test_short_keeps_the_turn_open_past_the_detector_and_the_stop_timeout(self):
+        await self._start("short", short_timeout=0.5)
+        await self._say("I'd like to")
+        await asyncio.sleep(0.3)
+        self.assertEqual(self.stops, [])
+
+        await asyncio.sleep(0.3)
+        self.assertEqual(len(self.stops), 1)
+        self.assertIsInstance(self.stops[0], ClassifierUserTurnStopStrategy)
 
 
 class TestClassifierUserTurnStrategies(unittest.TestCase):
-    def test_wraps_every_stop_strategy(self):
+    def test_adds_the_classifier_strategy_to_the_stop_strategies(self):
         classifier = _FakeClassifier()
-        strategies = ClassifierUserTurnStrategies(
-            classifier=classifier, stop=[_Detector(), _Detector()], short_timeout=1.0
-        )
-        self.assertEqual(len(strategies.stop), 2)
-        for s in strategies.stop:
-            self.assertIsInstance(s, ClassifierUserTurnCompletionStopStrategy)
-            self.assertIs(s.classifier, classifier)
+        detector = _Detector()
+        strategies = ClassifierUserTurnStrategies(classifier=classifier, stop=[detector])
+
+        self.assertIs(strategies.stop[0], detector)
+        self.assertIsInstance(strategies.stop[1], ClassifierUserTurnStopStrategy)
+        self.assertIs(strategies.stop[1].classifier, classifier)
+
+    def test_extending_a_service_adds_only_the_classifier_and_given_strategies(self):
+        classifier = _FakeClassifier()
+        strategies = ClassifierUserTurnStrategies(classifier=classifier)
+        extension = strategies._stop_extension or []
+
+        self.assertEqual(len(extension), 1)
+        self.assertIsInstance(extension[0], ClassifierUserTurnStopStrategy)
 
     def test_needs_a_classifier(self):
         with self.assertRaises(ValueError):
             ClassifierUserTurnStrategies(stop=[_Detector()])
+
+    def test_the_question_has_the_three_verdicts(self):
+        self.assertEqual(set(TURN_COMPLETION_QUESTION.options), {"complete", "short", "long"})
+
+
+if __name__ == "__main__":
+    unittest.main()

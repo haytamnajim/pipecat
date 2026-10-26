@@ -23,7 +23,7 @@ from pipecat.turns.user_start import (
 )
 from pipecat.turns.user_stop import (
     BaseUserTurnStopStrategy,
-    ClassifierUserTurnCompletionStopStrategy,
+    ClassifierUserTurnStopStrategy,
     EagerMatchPolicy,
     EagerUserTurnStopStrategy,
     ExternalUserTurnStopStrategy,
@@ -280,22 +280,34 @@ class FilterIncompleteUserTurnStrategies(UserTurnStrategies):
 
 @dataclass
 class ClassifierUserTurnStrategies(UserTurnStrategies):
-    """Stop strategies gated on a classifier's turn-completion verdict.
+    """Stop strategies that let a classifier decide whether the user's turn is complete.
 
-    Keeps the detector chain (defaults or user-supplied) and wraps each
-    detector in a
-    :class:`~pipecat.turns.user_stop.ClassifierUserTurnCompletionStopStrategy`,
-    so a detector firing asks the classifier whether the turn is complete
-    instead of ending it. The LLM runs only when a turn is complete.
+    An alternative to :class:`FilterIncompleteUserTurnStrategies` for an LLM
+    that doesn't follow the turn-completion marker instructions well. A
+    classifier decides whether the user finished their thought, and the LLM
+    only answers complete turns.
+
+    Configuring strategies this way keeps the stop strategies (defaults or
+    user-supplied) and adds
+    :class:`~pipecat.turns.user_stop.ClassifierUserTurnStopStrategy`. With
+    ``StrategyMode.ALL``, the default ``stop_mode``, the turn ends once the
+    other stop strategies decide the user stopped and the classifier says the
+    turn is complete.
+
+    With ``UserTurnStrategiesParams(stop_merge_mode=MergeMode.EXTEND)``, the
+    classifier strategy and any stop strategies given join the ones a service
+    recommends instead.
 
     Parameters:
         classifier: What decides whether a turn is complete. Required.
         context: The conversation, so the classifier sees the assistant's
             last message along with the user's turn.
-        short_timeout: Seconds to keep a turn open after a ``short`` verdict.
-        long_timeout: Seconds to keep a turn open after a ``long`` verdict.
+        short_timeout: Seconds to wait after a ``short`` verdict before the
+            classifier strategy decides the user is done.
+        long_timeout: Seconds to wait after a ``long`` verdict before the
+            classifier strategy decides the user is done.
         classification_timeout: Seconds to wait for the classifier before
-            ending the turn without it.
+            leaving the decision to the other stop strategies.
 
     Example::
 
@@ -315,17 +327,17 @@ class ClassifierUserTurnStrategies(UserTurnStrategies):
         super().__post_init__()
         if self.classifier is None:
             raise ValueError("ClassifierUserTurnStrategies needs a classifier")
-        self.stop = [
-            ClassifierUserTurnCompletionStopStrategy(
-                s,
-                classifier=self.classifier,
-                context=self.context,
-                short_timeout=self.short_timeout,
-                long_timeout=self.long_timeout,
-                classification_timeout=self.classification_timeout,
-            )
-            for s in self.stop or []
-        ]
+        strategy = ClassifierUserTurnStopStrategy(
+            classifier=self.classifier,
+            context=self.context,
+            short_timeout=self.short_timeout,
+            long_timeout=self.long_timeout,
+            classification_timeout=self.classification_timeout,
+        )
+        self.stop = [*(self.stop or []), strategy]
+        # Extending a service's stop strategies adds the classifier strategy and
+        # the stop strategies given, never the default ones.
+        self._stop_extension = [*(self._stop_extension or []), strategy]
 
 
 @dataclass

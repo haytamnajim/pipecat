@@ -10,6 +10,10 @@ A classifier decides whether the user's turn is complete before the LLM runs.
 When the user was cut off mid-thought ("I'd go to Japan because I love") or
 asked for time ("let me think"), the turn stays open and the bot says nothing.
 The LLM answers once the turn is complete, or when the wait times out.
+
+This suits an LLM that doesn't follow the turn-completion markers of
+`FilterIncompleteUserTurnStrategies` well: the classifier decides, and the LLM
+only answers.
 """
 
 import os
@@ -18,7 +22,7 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.classifiers.jev.classifier import JevClassifier
+from pipecat.classifiers.typesafe.jev.classifier import JevClassifier
 from pipecat.evals.transport import EvalTransportParams
 from pipecat.frames.frames import LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
@@ -86,10 +90,12 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     )
 
     context = LLMContext()
-    # `ClassifierUserTurnStrategies` keeps the default detector chain and asks
-    # the classifier, each time a detector fires, whether the user's turn is
-    # complete. The LLM runs only when it is. The context lets the classifier
-    # see the assistant's last question along with the user's words.
+    # `ClassifierUserTurnStrategies` keeps the default stop strategies and adds
+    # one that asks the classifier whether the user's turn is complete. The turn
+    # ends once smart turn says the user stopped and the classifier says the
+    # turn is complete, so the LLM only answers complete turns. The context lets
+    # the classifier see the assistant's last question along with the user's
+    # words.
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(

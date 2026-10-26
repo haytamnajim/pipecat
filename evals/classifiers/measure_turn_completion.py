@@ -32,11 +32,9 @@ from pathlib import Path
 import yaml
 
 from pipecat.classifiers.base_classifier import BaseClassifier, ClassifierError
-from pipecat.classifiers.jev.classifier import JevClassifier
 from pipecat.classifiers.llm.classifier import LLMClassifier
-from pipecat.turns.user_stop.classifier_user_turn_completion_stop_strategy import (
-    TURN_COMPLETION_QUESTION,
-)
+from pipecat.classifiers.typesafe.jev.classifier import JevClassifier
+from pipecat.turns.user_stop.classifier_user_turn_stop_strategy import TURN_COMPLETION_QUESTION
 
 HERE = Path(__file__).parent
 
