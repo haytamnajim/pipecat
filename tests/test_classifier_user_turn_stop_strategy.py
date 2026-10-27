@@ -62,7 +62,7 @@ class _FakeClassifier(BaseClassifier):
         return results, None
 
 
-class _Detector(BaseUserTurnStopStrategy):
+class _VADStopStrategy(BaseUserTurnStopStrategy):
     """Decides the user is done as soon as VAD stops, like a quick smart turn."""
 
     async def process_frame(self, frame: Frame):
@@ -242,7 +242,7 @@ class TestClassifierUserTurnStopStrategy(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.classifier.cleaned_up)
 
 
-class TestClassifierNextToADetector(unittest.IsolatedAsyncioTestCase):
+class TestClassifierInTheTurnController(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.task_manager = TaskManager()
         self.stops = []
@@ -250,9 +250,9 @@ class TestClassifierNextToADetector(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.controller.cleanup()
 
-    async def _start(self, *answers, detector=True, **kwargs):
+    async def _start(self, *answers, vad_strategy=True, **kwargs):
         classifier = _FakeClassifier(*answers)
-        stop: list[BaseUserTurnStopStrategy] = [_Detector()] if detector else []
+        stop: list[BaseUserTurnStopStrategy] = [_VADStopStrategy()] if vad_strategy else []
         stop.append(ClassifierUserTurnStopStrategy(classifier=classifier, **kwargs))
         self.controller = UserTurnController(
             user_turn_strategies=UserTurnStrategies(start=[VADUserTurnStartStrategy()], stop=stop),
@@ -272,13 +272,13 @@ class TestClassifierNextToADetector(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(SETTLE)
 
     async def test_the_classifier_alone_ends_a_complete_turn(self):
-        await self._start("complete", detector=False)
+        await self._start("complete", vad_strategy=False)
         await self._say("I think I would like to see Kyoto.")
 
         self.assertEqual(len(self.stops), 1)
 
     async def test_the_classifier_alone_holds_an_unfinished_turn(self):
-        await self._start("short", detector=False, short_timeout=0.5)
+        await self._start("short", vad_strategy=False, short_timeout=0.5)
         await self._say("I'd like to")
         await asyncio.sleep(0.3)
         self.assertEqual(self.stops, [])
@@ -286,14 +286,14 @@ class TestClassifierNextToADetector(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.3)
         self.assertEqual(len(self.stops), 1)
 
-    async def test_the_turn_ends_once_the_detector_and_the_classifier_agree(self):
+    async def test_the_turn_ends_once_the_vad_strategy_and_the_classifier_decide(self):
         await self._start("complete")
         await self._say("book a table.")
 
         self.assertEqual(len(self.stops), 1)
         self.assertIsInstance(self.stops[0], ClassifierUserTurnStopStrategy)
 
-    async def test_short_keeps_the_turn_open_past_the_detector_and_the_stop_timeout(self):
+    async def test_short_keeps_the_turn_open_past_the_vad_strategy_and_the_stop_timeout(self):
         await self._start("short", short_timeout=0.5)
         await self._say("I'd like to")
         await asyncio.sleep(0.3)
@@ -314,10 +314,10 @@ class TestClassifierUserTurnStrategies(unittest.TestCase):
 
     def test_adds_the_classifier_strategy_to_the_stop_strategies_given(self):
         classifier = _FakeClassifier()
-        detector = _Detector()
-        strategies = ClassifierUserTurnStrategies(classifier=classifier, stop=[detector])
+        vad_strategy = _VADStopStrategy()
+        strategies = ClassifierUserTurnStrategies(classifier=classifier, stop=[vad_strategy])
 
-        self.assertIs(strategies.stop[0], detector)
+        self.assertIs(strategies.stop[0], vad_strategy)
         self.assertIsInstance(strategies.stop[1], ClassifierUserTurnStopStrategy)
         self.assertIs(strategies.stop[1].classifier, classifier)
 
@@ -331,7 +331,7 @@ class TestClassifierUserTurnStrategies(unittest.TestCase):
 
     def test_needs_a_classifier(self):
         with self.assertRaises(ValueError):
-            ClassifierUserTurnStrategies(stop=[_Detector()])
+            ClassifierUserTurnStrategies(stop=[_VADStopStrategy()])
 
     def test_the_question_has_the_three_verdicts(self):
         self.assertEqual(set(TURN_COMPLETION_QUESTION.options), {"complete", "short", "long"})
