@@ -14,6 +14,7 @@ performs it by, and a sentence's labels are written as tags in those names.
 from dataclasses import dataclass, field
 
 from pipecat.expressive.expression import (
+    BREATH_KINDS,
     NEUTRAL_DELIVERY,
     STANDARD_DELIVERY,
     STANDARD_SOUNDS,
@@ -31,24 +32,36 @@ class LabelSpace:
         deliveries: Standard delivery to the name to write, in standard order.
         sounds: Standard sound to the name to write, in standard order.
         emphasis: Whether the service stresses ``^^words^^``.
+        breaths: Kind of breath to the name to write, where a breath is offered.
+            The model chooses only a breath, and the tagger draws its kind.
     """
 
     deliveries: dict[str, str]
     sounds: dict[str, str]
     emphasis: bool
+    breaths: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def resolve(cls, capabilities: ExpressionCapabilities, policy: ExpressionPolicy):
         """The labels the service performs and the policy offers.
 
-        A breath is offered only with ``ExpressionGuidance.BREATHE`` in the policy.
+        A breath, and its kinds, are offered only with ``ExpressionGuidance.BREATHE``
+        in the policy.
         """
         sounds = [s for s in STANDARD_SOUNDS if s != "breath" or _breathes(policy)]
+        resolved = _resolve(capabilities, sounds, policy.sounds)
         return cls(
             deliveries=_resolve(capabilities, STANDARD_DELIVERY, policy.delivery),
-            sounds=_resolve(capabilities, sounds, policy.sounds),
+            sounds=resolved,
             emphasis=capabilities.emphasis,
+            breaths=_resolve(capabilities, BREATH_KINDS, policy.sounds)
+            if "breath" in resolved
+            else {},
         )
+
+    def sound_name(self, label: str) -> str | None:
+        """The name to write for a sound or a kind of breath, if the space holds it."""
+        return self.sounds.get(label) or self.breaths.get(label)
 
 
 @dataclass(frozen=True)
@@ -119,9 +132,9 @@ class ReplyRenderer:
             text = text[:at] + tag + text[at:]
 
         if kept.sound_before:
-            text = f"[[{self._space.sounds[kept.sound_before]}]] {text}"
+            text = f"[[{self._space.sound_name(kept.sound_before)}]] {text}"
         if kept.sound_after:
-            text = f"{text} [[{self._space.sounds[kept.sound_after]}]]"
+            text = f"{text} [[{self._space.sound_name(kept.sound_after)}]]"
         delivery = names[kept.delivery] if kept.delivery else None
         if delivery != self._delivery:
             text = f"<<{delivery or NEUTRAL_DELIVERY}>> {text}"
@@ -165,8 +178,8 @@ def _keep(sentence: str, labels: SentenceLabels, space: LabelSpace) -> SentenceL
         delivery=labels.delivery if labels.delivery in space.deliveries else None,
         spans=spans,
         emphasis=emphasis,
-        sound_before=labels.sound_before if labels.sound_before in space.sounds else None,
-        sound_after=labels.sound_after if labels.sound_after in space.sounds else None,
+        sound_before=labels.sound_before if space.sound_name(labels.sound_before or "") else None,
+        sound_after=labels.sound_after if space.sound_name(labels.sound_after or "") else None,
     )
 
 

@@ -60,6 +60,8 @@ STANDARD_DELIVERY = (
     FAST_DELIVERY,
 )
 STANDARD_SOUNDS = ("laugh", "chuckle", "sigh", "breath")
+# The kinds a tagger draws a breath as, named like the sounds in ``standard_names``.
+BREATH_KINDS = ("light breath", "deep breath", "exhale")
 
 
 class DeliveryScope(Enum):
@@ -129,9 +131,9 @@ class ExpressionCapabilities:
             in milliseconds, or None when it can't pause.
         emphasis: Whether the service can stress words marked ``^^word^^``.
         delivery_scope: Where in a response the service can change delivery.
-        standard_names: The names the service performs each standard delivery
-            and sound by (``STANDARD_DELIVERY``, ``STANDARD_SOUNDS``), best
-            first, such as ``{"calm": ["calm", "peaceful"], "laugh":
+        standard_names: The names the service performs each standard delivery,
+            sound and kind of breath by (``STANDARD_DELIVERY``,
+            ``STANDARD_SOUNDS``, ``BREATH_KINDS``), best first, such as ``{"calm": ["calm", "peaceful"], "laugh":
             ["laughter"]}``. A later name stands in when an expression policy
             leaves out the ones before it. A label left out is performed by its
             own name, when the service declares it or accepts free text.
@@ -166,14 +168,15 @@ def standard_name(
 
     Args:
         capabilities: What the service can perform.
-        label: A label from ``STANDARD_DELIVERY`` or ``STANDARD_SOUNDS``.
+        label: A label from ``STANDARD_DELIVERY``, ``STANDARD_SOUNDS`` or
+            ``BREATH_KINDS``.
         offered: The names an expression policy offers, or None for any.
 
     Returns:
         The first name the service performs and the policy offers, or None
         when there's none.
     """
-    if label in STANDARD_SOUNDS:
+    if label in STANDARD_SOUNDS or label in BREATH_KINDS:
         terms, free_text = capabilities.sounds, capabilities.free_text_sounds
     else:
         terms, free_text = capabilities.delivery, capabilities.free_text_delivery

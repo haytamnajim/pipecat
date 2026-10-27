@@ -13,6 +13,7 @@ from pipecat.adapters.tts.services.elevenlabs_adapter import ElevenLabsAudioTagE
 from pipecat.adapters.tts.services.fish_adapter import FishAudioS2ExpressionAdapter
 from pipecat.adapters.tts.services.minimax_adapter import MiniMaxExpressionAdapter
 from pipecat.expressive.expression import (
+    BREATH_KINDS,
     STANDARD_DELIVERY,
     STANDARD_SOUNDS,
     ExpressionCapabilities,
@@ -32,7 +33,7 @@ ADAPTERS = [
 def test_every_standard_name_an_adapter_lists_is_one_it_performs(adapter):
     capabilities = adapter().capabilities()
 
-    assert set(capabilities.standard_names) <= {*STANDARD_DELIVERY, *STANDARD_SOUNDS}
+    assert set(capabilities.standard_names) <= {*STANDARD_DELIVERY, *STANDARD_SOUNDS, *BREATH_KINDS}
     for label, names in capabilities.standard_names.items():
         for name in names:
             assert standard_name(capabilities, label, offered=[name]) == name
@@ -78,3 +79,32 @@ def test_a_name_the_service_doesnt_perform_is_passed_over():
     )
 
     assert standard_name(capabilities, "warm") == "happy"
+
+
+@pytest.mark.parametrize(
+    "adapter,names",
+    [
+        (CartesiaExpressionAdapter, {}),
+        (
+            ElevenLabsAudioTagExpressionAdapter,
+            {
+                "light breath": "quick breath",
+                "deep breath": "deep breath",
+                "exhale": "exhales softly",
+            },
+        ),
+        (
+            FishAudioS2ExpressionAdapter,
+            {"light breath": "inhaling", "deep breath": "deep breath", "exhale": "exhaling"},
+        ),
+        (
+            MiniMaxExpressionAdapter,
+            {"light breath": "breath", "deep breath": "inhale", "exhale": "exhale"},
+        ),
+    ],
+)
+def test_each_kind_of_breath_has_a_name_where_the_service_breathes(adapter, names):
+    capabilities = adapter().capabilities()
+
+    resolved = {kind: standard_name(capabilities, kind) for kind in BREATH_KINDS}
+    assert {kind: name for kind, name in resolved.items() if name} == names
