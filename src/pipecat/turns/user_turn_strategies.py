@@ -284,15 +284,16 @@ class ClassifierUserTurnStrategies(UserTurnStrategies):
 
     An alternative to :class:`FilterIncompleteUserTurnStrategies` for an LLM
     that doesn't follow the turn-completion marker instructions well. A
-    classifier decides whether the user finished their thought, and the LLM
-    only answers complete turns.
+    classifier decides from the user's words, and the bot's last line, whether
+    the user finished their thought, and the LLM only answers complete turns.
 
-    Configuring strategies this way keeps the stop strategies (defaults or
-    user-supplied) and adds
-    :class:`~pipecat.turns.user_stop.ClassifierUserTurnStopStrategy`. With
-    ``StrategyMode.ALL``, the default ``stop_mode``, the turn ends once the
-    other stop strategies decide the user stopped and the classifier says the
-    turn is complete.
+    By default the only stop strategy is
+    :class:`~pipecat.turns.user_stop.ClassifierUserTurnStopStrategy`, which asks
+    at every pause with new words, so a complete turn ends as soon as the
+    classifier answers. Stop strategies given here are kept and the classifier
+    strategy is added after them: a turn analyzer such as smart turn then has
+    to agree as well, which adds an acoustic check but holds a complete turn
+    until the analyzer decides.
 
     With ``UserTurnStrategiesParams(stop_merge_mode=MergeMode.EXTEND)``, the
     classifier strategy and any stop strategies given join the ones a service
@@ -324,6 +325,7 @@ class ClassifierUserTurnStrategies(UserTurnStrategies):
     classification_timeout: float = 1.0
 
     def __post_init__(self):
+        given = list(self.stop or [])
         super().__post_init__()
         if self.classifier is None:
             raise ValueError("ClassifierUserTurnStrategies needs a classifier")
@@ -334,9 +336,10 @@ class ClassifierUserTurnStrategies(UserTurnStrategies):
             long_timeout=self.long_timeout,
             classification_timeout=self.classification_timeout,
         )
-        self.stop = [*(self.stop or []), strategy]
-        # Extending a service's stop strategies adds the classifier strategy and
-        # the stop strategies given, never the default ones.
+        # The classifier replaces the default stop strategies rather than
+        # joining them: a turn analyzer would only hold back the turns the
+        # classifier already found complete.
+        self.stop = [*given, strategy]
         self._stop_extension = [*(self._stop_extension or []), strategy]
 
 

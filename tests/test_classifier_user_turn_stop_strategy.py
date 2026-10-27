@@ -250,13 +250,12 @@ class TestClassifierNextToADetector(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.controller.cleanup()
 
-    async def _start(self, *answers, **kwargs):
+    async def _start(self, *answers, detector=True, **kwargs):
         classifier = _FakeClassifier(*answers)
+        stop: list[BaseUserTurnStopStrategy] = [_Detector()] if detector else []
+        stop.append(ClassifierUserTurnStopStrategy(classifier=classifier, **kwargs))
         self.controller = UserTurnController(
-            user_turn_strategies=UserTurnStrategies(
-                start=[VADUserTurnStartStrategy()],
-                stop=[_Detector(), ClassifierUserTurnStopStrategy(classifier=classifier, **kwargs)],
-            ),
+            user_turn_strategies=UserTurnStrategies(start=[VADUserTurnStartStrategy()], stop=stop),
             user_turn_stop_timeout=0.2,
         )
         await self.controller.setup(frame_processor_setup(self.task_manager))
@@ -271,6 +270,21 @@ class TestClassifierNextToADetector(unittest.IsolatedAsyncioTestCase):
         await self.controller.process_frame(_said(text))
         await self.controller.process_frame(VADUserStoppedSpeakingFrame())
         await asyncio.sleep(SETTLE)
+
+    async def test_the_classifier_alone_ends_a_complete_turn(self):
+        await self._start("complete", detector=False)
+        await self._say("I think I would like to see Kyoto.")
+
+        self.assertEqual(len(self.stops), 1)
+
+    async def test_the_classifier_alone_holds_an_unfinished_turn(self):
+        await self._start("short", detector=False, short_timeout=0.5)
+        await self._say("I'd like to")
+        await asyncio.sleep(0.3)
+        self.assertEqual(self.stops, [])
+
+        await asyncio.sleep(0.3)
+        self.assertEqual(len(self.stops), 1)
 
     async def test_the_turn_ends_once_the_detector_and_the_classifier_agree(self):
         await self._start("complete")
@@ -291,7 +305,14 @@ class TestClassifierNextToADetector(unittest.IsolatedAsyncioTestCase):
 
 
 class TestClassifierUserTurnStrategies(unittest.TestCase):
-    def test_adds_the_classifier_strategy_to_the_stop_strategies(self):
+    def test_the_classifier_is_the_only_default_stop_strategy(self):
+        classifier = _FakeClassifier()
+        strategies = ClassifierUserTurnStrategies(classifier=classifier)
+
+        self.assertEqual(len(strategies.stop or []), 1)
+        self.assertIsInstance((strategies.stop or [])[0], ClassifierUserTurnStopStrategy)
+
+    def test_adds_the_classifier_strategy_to_the_stop_strategies_given(self):
         classifier = _FakeClassifier()
         detector = _Detector()
         strategies = ClassifierUserTurnStrategies(classifier=classifier, stop=[detector])

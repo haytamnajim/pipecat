@@ -90,12 +90,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     )
 
     context = LLMContext()
-    # `ClassifierUserTurnStrategies` keeps the default stop strategies and adds
-    # one that asks the classifier whether the user's turn is complete. The turn
-    # ends once smart turn says the user stopped and the classifier says the
-    # turn is complete, so the LLM only answers complete turns. The context lets
-    # the classifier see the assistant's last question along with the user's
-    # words.
+    # `ClassifierUserTurnStrategies` asks the classifier at every pause whether
+    # the user's turn is complete, and the turn ends as soon as it is, so the
+    # LLM only answers complete turns. The context lets the classifier see the
+    # assistant's last question along with the user's words.
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(

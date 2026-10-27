@@ -76,13 +76,17 @@ class ClassifierUserTurnStopStrategy(BaseUserTurnStopStrategy):
       reports after ``long_timeout`` seconds unless they continue.
 
     If the classifier fails or takes longer than ``classification_timeout``, it
-    reports right away and leaves the decision to the other stop strategies.
+    reports right away, so a turn never waits on a classifier that can't
+    answer. A pause with no words transcribed isn't classified, and the turn
+    controller's stop timeout ends such a turn.
 
-    It sits next to a strategy that detects the user stopping, such as
-    :class:`~pipecat.turns.user_stop.TurnAnalyzerUserTurnStopStrategy`. In a
+    It works as the only stop strategy: the LLM then answers only complete
+    turns, as soon as the classifier finds them complete. Next to a turn
+    analyzer such as
+    :class:`~pipecat.turns.user_stop.TurnAnalyzerUserTurnStopStrategy`, in a
     ``StrategyMode.ALL`` list, the default, the turn ends once both have
-    decided, so the LLM only answers complete turns and never sees one the
-    classifier held open. In a ``StrategyMode.FIRST`` list the classifier can
+    decided: the analyzer adds an acoustic check, but holds a complete turn
+    until it decides too. In a ``StrategyMode.FIRST`` list the classifier can
     only end a turn sooner.
 
     Give it the conversation's :class:`~pipecat.processors.aggregators.llm_context.LLMContext`
@@ -92,7 +96,6 @@ class ClassifierUserTurnStopStrategy(BaseUserTurnStopStrategy):
     Example::
 
         stop=[
-            TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3()),
             ClassifierUserTurnStopStrategy(
                 classifier=JevClassifier(api_key=...),
                 context=context,
@@ -100,7 +103,7 @@ class ClassifierUserTurnStopStrategy(BaseUserTurnStopStrategy):
         ]
 
     :class:`~pipecat.turns.user_turn_strategies.ClassifierUserTurnStrategies`
-    adds it to the default stop strategies.
+    sets it up as the only stop strategy.
     """
 
     def __init__(
