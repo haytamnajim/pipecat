@@ -23,6 +23,11 @@ from pipecat.expressive.expression import (
 )
 from pipecat.expressive.policy import ExpressionGuidance, ExpressionPolicy
 
+# The services the model was trained with, by the names it reads for them. It reads
+# "other" for any other.
+TRAINED_SERVICES = ("cartesia", "elevenlabs", "fish", "minimax")
+OTHER_SERVICE = "other"
+
 
 @dataclass(frozen=True)
 class LabelSpace:
@@ -32,6 +37,7 @@ class LabelSpace:
         deliveries: Standard delivery to the name to write, in standard order.
         sounds: Standard sound to the name to write, in standard order.
         emphasis: Whether the service stresses ``^^words^^``.
+        tts: The service, by the name the model was trained to read for it.
         breaths: Kind of breath to the name to write, where a breath is offered.
             The model chooses only a breath, and the tagger draws its kind.
     """
@@ -39,14 +45,23 @@ class LabelSpace:
     deliveries: dict[str, str]
     sounds: dict[str, str]
     emphasis: bool
+    tts: str = OTHER_SERVICE
     breaths: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def resolve(cls, capabilities: ExpressionCapabilities, policy: ExpressionPolicy):
+    def resolve(
+        cls, capabilities: ExpressionCapabilities, policy: ExpressionPolicy, service_name: str = ""
+    ):
         """The labels the service performs and the policy offers.
 
         A breath, and its kinds, are offered only with ``ExpressionGuidance.BREATHE``
         in the policy.
+
+        Args:
+            capabilities: What the service performs.
+            policy: The pipeline's expression policy.
+            service_name: The service's name, such as ``"ElevenLabsTTSService#0"``,
+                which says which of the services the model was trained with it is.
         """
         sounds = [s for s in STANDARD_SOUNDS if s != "breath" or _breathes(policy)]
         resolved = _resolve(capabilities, sounds, policy.sounds)
@@ -54,6 +69,7 @@ class LabelSpace:
             deliveries=_resolve(capabilities, STANDARD_DELIVERY, policy.delivery),
             sounds=resolved,
             emphasis=capabilities.emphasis,
+            tts=_trained_service(service_name),
             breaths=_resolve(capabilities, BREATH_KINDS, policy.sounds)
             if "breath" in resolved
             else {},
@@ -140,6 +156,11 @@ class ReplyRenderer:
             text = f"<<{delivery or NEUTRAL_DELIVERY}>> {text}"
             self._delivery = delivery
         return text
+
+
+def _trained_service(service_name: str) -> str:
+    name = service_name.lower()
+    return next((service for service in TRAINED_SERVICES if service in name), OTHER_SERVICE)
 
 
 def _breathes(policy: ExpressionPolicy) -> bool:
