@@ -19,7 +19,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.tone._models import load_model
-from pipecat.processors.tone.reader.model import PipecatToneReaderModel
+from pipecat.processors.tone.reader.model import TONE_REVISION, PipecatToneReaderModel
 
 _EMOTION = (
     "The feeling the words show. Read from the words alone, so neutral means they show no "
@@ -58,6 +58,7 @@ class PipecatToneReader(FrameProcessor):
     def __init__(
         self,
         *,
+        revision: str = TONE_REVISION,
         precision: Literal["fp16", "fp32"] = "fp16",
         threads: int = 4,
         **kwargs,
@@ -65,12 +66,14 @@ class PipecatToneReader(FrameProcessor):
         """Initialize the processor.
 
         Args:
+            revision: The model's release on Hugging Face, such as ``"reader-rc1"``.
             precision: The weights to download: ``"fp16"`` or ``"fp32"``.
             threads: The CPU threads for one read.
             **kwargs: Additional arguments passed to the parent.
         """
         super().__init__(**kwargs)
         self._model: PipecatToneReaderModel | None = None
+        self._revision = revision
         self._precision: Literal["fp16", "fp32"] = precision
         self._threads = threads
         self._previous: str | None = None
@@ -99,9 +102,9 @@ class PipecatToneReader(FrameProcessor):
         self._model = await load_model(
             self,
             "Pipecat Tone's reader",
-            ("reader", self._precision, self._threads),
+            ("reader", self._revision, self._precision, self._threads),
             lambda: PipecatToneReaderModel.download(
-                precision=self._precision, threads=self._threads
+                revision=self._revision, precision=self._precision, threads=self._threads
             ),
         )
         if self._model:
