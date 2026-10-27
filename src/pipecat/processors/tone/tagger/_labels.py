@@ -11,7 +11,7 @@ those its TTS service performs and its policy offers, each with the name the ser
 performs it by, and a sentence's labels are written as tags in those names.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from pipecat.expressive.expression import (
     BREATH_KINDS,
@@ -50,7 +50,11 @@ class LabelSpace:
 
     @classmethod
     def resolve(
-        cls, capabilities: ExpressionCapabilities, policy: ExpressionPolicy, service_name: str = ""
+        cls,
+        capabilities: ExpressionCapabilities,
+        policy: ExpressionPolicy,
+        service_name: str = "",
+        vocabulary: dict[str, list[str]] | None = None,
     ):
         """The labels the service performs and the policy offers.
 
@@ -62,7 +66,12 @@ class LabelSpace:
             policy: The pipeline's expression policy.
             service_name: The service's name, such as ``"ElevenLabsTTSService#0"``,
                 which says which of the services the model was trained with it is.
+            vocabulary: Names to try first for a label, before the service's own.
         """
+        if vocabulary:
+            names = capabilities.standard_names
+            first = {label: [*own, *names.get(label, [label])] for label, own in vocabulary.items()}
+            capabilities = replace(capabilities, standard_names={**names, **first})
         sounds = [s for s in STANDARD_SOUNDS if s != "breath" or _breathes(policy)]
         resolved = _resolve(capabilities, sounds, policy.sounds)
         return cls(
